@@ -3,22 +3,24 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter.ttk import Progressbar
 from PIL import Image, ImageTk
+import threading
 
 class ImageProcessorApp(tk.Tk):
     def __init__(self):
         super().__init__()
 
-        self.title("View and Delete Aligned_Debug Images")
+        self.title("Image Viewer and Scanner")
 
         # Variables
         self.curr_dir = tk.StringVar()
-        self.aligned_path = tk.StringVar()
         self.max_image_number = tk.IntVar()
         self.start_number = tk.IntVar(value=1)
         self.end_number = tk.IntVar()
         self.current_image_number = tk.IntVar()
         self.warning_message = tk.StringVar()
         self.current_image_path = tk.StringVar()
+        self.scan_delay = tk.IntVar(value=100)  # Default delay of 100 ms
+        self.is_advancing = False  # For continuous scanning
 
         # GUI Layout
         self.create_widgets()
@@ -26,6 +28,7 @@ class ImageProcessorApp(tk.Tk):
         # Placeholder for images and image number
         self.images = []
         self.curr_image = None
+        self.scanning = False
 
     def create_widgets(self):
         # Create a frame on the left side for the controls
@@ -72,20 +75,38 @@ class ImageProcessorApp(tk.Tk):
         button_frame = tk.Frame(self)
         button_frame.pack(side=tk.TOP, fill=tk.X)
 
-        # Navigation buttons on the left
+        # Navigation buttons
+        self.prev_scan_button = tk.Button(button_frame, text="Previous Scan")
+        self.prev_scan_button.pack(side=tk.LEFT, padx=10, pady=10)
+        self.prev_scan_button.bind("<ButtonPress-1>", self.start_previous_image_loop)
+        self.prev_scan_button.bind("<ButtonRelease-1>", self.stop_image_loop)
+
         self.prev_button = tk.Button(button_frame, text="Previous Image", command=self.previous_image)
-        self.prev_button.pack(side=tk.LEFT, padx=20, pady=10)
+        self.prev_button.pack(side=tk.LEFT, padx=10, pady=10)
 
         self.next_button = tk.Button(button_frame, text="Next Image", command=self.next_image)
-        self.next_button.pack(side=tk.LEFT, padx=20, pady=10)
+        self.next_button.pack(side=tk.LEFT, padx=10, pady=10)
 
-        # Progress bar to the right of the Next Image button
+        self.next_scan_button = tk.Button(button_frame, text="Forward Scan")
+        self.next_scan_button.pack(side=tk.LEFT, padx=10, pady=10)
+        self.next_scan_button.bind("<ButtonPress-1>", self.start_next_image_loop)
+        self.next_scan_button.bind("<ButtonRelease-1>", self.stop_image_loop)
+
+        # Time delay input box and speed label
+        tk.Label(button_frame, text="Speed (ms):").pack(side=tk.LEFT, padx=5)
+        delay_entry = tk.Entry(button_frame, textvariable=self.scan_delay, width=5)
+        delay_entry.pack(side=tk.LEFT, padx=5)
+
+        # Current image number / end number and progress bar
+        self.image_number_label = tk.Label(button_frame, text="0/0")
+        self.image_number_label.pack(side=tk.LEFT, padx=10)
+
         self.progress = Progressbar(button_frame, orient="horizontal", mode="determinate", length=300)
-        self.progress.pack(side=tk.LEFT, padx=20, pady=10, expand=True)
+        self.progress.pack(side=tk.LEFT, padx=10, pady=10, expand=True)
 
-        # Delete button on the right
+        # Delete button
         self.delete_button = tk.Button(button_frame, text="Delete Image", command=self.delete_image)
-        self.delete_button.pack(side=tk.RIGHT, padx=20, pady=10)
+        self.delete_button.pack(side=tk.RIGHT, padx=10, pady=10)
 
         # Bind canvas click
         self.canvas.bind("<Button-1>", lambda event: self.next_image())
@@ -94,7 +115,6 @@ class ImageProcessorApp(tk.Tk):
         directory = filedialog.askdirectory()
         if directory:
             self.curr_dir.set(directory)
-            self.aligned_path.set(os.path.join(directory, "..", "aligned"))
             self.load_images()
 
     def load_images(self):
@@ -119,18 +139,13 @@ class ImageProcessorApp(tk.Tk):
     def load_image(self, image_number):
         # Load the image corresponding to the given image number
         filename = os.path.join(self.curr_dir.get(), str(image_number).zfill(5) + ".jpg")
-        aligned_filename_0 = os.path.join(self.aligned_path.get(), str(image_number).zfill(5) + "_0.jpg")
-        aligned_filename_1 = os.path.join(self.aligned_path.get(), str(image_number).zfill(5) + "_1.jpg")
 
         if not os.path.isfile(filename):
             self.warning_message.set(f"Image {filename} does not exist.")
             self.next_image()  # Skip missing images
             return
 
-        if not (os.path.isfile(aligned_filename_0) or os.path.isfile(aligned_filename_1)):
-            self.warning_message.set(f"Warning: {filename} does not exist in aligned directory.")
-        else:
-            self.warning_message.set("")  # Clear any previous warnings
+        self.warning_message.set("")  # Clear any previous warnings
 
         # Display the current image path
         self.current_image_path.set(filename)
@@ -138,16 +153,25 @@ class ImageProcessorApp(tk.Tk):
         # Open image using PIL and display on the canvas
         image = Image.open(filename)
         image_width, image_height = image.size
+
+        # Resize the canvas to fit the image
         self.canvas.config(width=image_width, height=image_height)
+
+        # Convert image to PhotoImage
         self.curr_image = ImageTk.PhotoImage(image)
+
+        # Clear canvas and draw the new image
         self.canvas.create_image(0, 0, anchor=tk.NW, image=self.curr_image)
 
-        # Update the progress bar
-        self.update_progress_bar()
+        # Update the progress bar and image number label
+        self.update_progress()
 
-        # Adjust the window size dynamically to fit the canvas and buttons
-        self.update_idletasks()  # Ensure all geometry updates have been processed
-        self.geometry("")  # Empty string resizes the window to fit all content
+    def update_progress(self):
+        """Update the progress bar and image number label."""
+        total_images = self.end_number.get() - self.start_number.get() + 1
+        current_progress = self.current_image_number.get() - self.start_number.get() + 1
+        self.progress['value'] = (current_progress / total_images) * 100
+        self.image_number_label.config(text=f"{self.current_image_number.get()}/{self.end_number.get()}")
 
     def next_image(self):
         # Increment the current image number and load the next image
@@ -161,13 +185,33 @@ class ImageProcessorApp(tk.Tk):
     def previous_image(self):
         # Decrement the current image number and load the previous image
         prev_image_num = self.current_image_number.get() - 1
-        while prev_image_num >= self.start_number.get():
-            if os.path.isfile(os.path.join(self.curr_dir.get(), str(prev_image_num).zfill(5) + ".jpg")):
-                self.current_image_number.set(prev_image_num)
-                self.load_image(prev_image_num)
-                return
-            prev_image_num -= 1
-        messagebox.showinfo("Start of Range", "Reached the start of the specified range.")
+        if prev_image_num < self.start_number.get():
+            messagebox.showinfo("Start of Range", "Reached the start of the specified range.")
+            return
+        self.current_image_number.set(prev_image_num)
+        self.load_image(prev_image_num)
+
+    def start_next_image_loop(self, event):
+        """Start continuously advancing images forward."""
+        self.is_advancing = True
+        self.advance_images("next")
+
+    def start_previous_image_loop(self, event):
+        """Start continuously advancing images backward."""
+        self.is_advancing = True
+        self.advance_images("previous")
+
+    def stop_image_loop(self, event=None):
+        """Stop continuous image advancement."""
+        self.is_advancing = False
+
+    def advance_images(self, direction):
+        if self.is_advancing:
+            if direction == "next":
+                self.next_image()
+            elif direction == "previous":
+                self.previous_image()
+            self.after(self.scan_delay.get(), lambda: self.advance_images(direction))
 
     def delete_image(self):
         # Delete the current image and move to the next one
@@ -192,13 +236,6 @@ class ImageProcessorApp(tk.Tk):
         elif self.current_image_number.get() > self.end_number.get():
             self.current_image_number.set(self.end_number.get())
         self.load_image(self.current_image_number.get())
-
-    def update_progress_bar(self):
-        """Update the progress bar based on the current image position."""
-        total_images = self.end_number.get() - self.start_number.get() + 1
-        current_progress = self.current_image_number.get() - self.start_number.get() + 1
-        self.progress['value'] = (current_progress / total_images) * 100
-
 
 if __name__ == "__main__":
     app = ImageProcessorApp()
